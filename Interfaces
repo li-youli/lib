@@ -1,0 +1,56 @@
+using System.Collections.Generic;
+
+namespace MagicLibrarySystem
+{
+    public interface IUserDAO
+    {
+        void AddUser(User user);
+        User GetUser(string id);
+        IEnumerable<User> GetAllUsers();
+        void UpdateUser(User user);
+        void DeleteUser(string id);
+    }
+
+    public interface IBookDAO
+    {
+        void AddBook(Book book);
+        Book GetBook(string id);
+        IEnumerable<Book> GetAllBooks();
+        void UpdateBook(Book book);
+        void DeleteBook(string id);
+    }
+
+    public interface ILoanDAO
+    {
+        void AddTransaction(LoanTransaction transaction);
+        IEnumerable<LoanTransaction> GetAllTransactions();
+        void UpdateTransaction(LoanTransaction transaction);
+    }
+
+    public interface ILibraryBLL
+    {
+        User GetUserDetails(string id);
+        void RegisterUser(string id, string name, string email, Role role, string major, int grade);
+        void EditUser(string id, string newName, string newEmail, string newMajor, int newGrade);
+        void DeleteUser(string currentUserId, string targetUserId);
+
+        void AddNewBook(string id, string title, string category, int stock);
+        void EditBook(string id, string newTitle, string newCategory, int newStock);
+        void DeleteBook(string id);
+
+        IEnumerable<Book> GetAllBooks();
+        IEnumerable<Book> SearchBooks(string keyword);
+
+        void BorrowBook(string userId, string bookId);
+        void ReturnBook(string userId, string bookId);
+        void ExtendLoan(string userId, string bookId);
+
+        IEnumerable<LoanTransaction> GetUserHistory(string userId);
+        (decimal TotalFine, List<string> FineDetails) GetStudentFines(string userId);
+        void ClearFines(string adminId, string studentId);
+
+        void ShowAnalytics();
+        void ShowAllHistory();
+        void ExportReport();
+    }
+}
