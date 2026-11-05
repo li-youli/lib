@@ -1,0 +1,265 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.IO;
+using System.Text;
+
+namespace MagicLibrarySystem
+{
+    public class LibraryBLL : ILibraryBLL
+    {
+        private readonly IUserDAO _userDAO;
+        private readonly IBookDAO _bookDAO;
+        private readonly ILoanDAO _loanDAO;
+        private const int MAX_LOANS = 3;
+        private const decimal FINE_PER_DAY = 1m; // 1 NT per day
+        public decimal TotalLibraryIncome { get; private set; } = 0;
+
+        public LibraryBLL(IUserDAO userDAO, IBookDAO bookDAO, ILoanDAO loanDAO)
+        {
+            _userDAO = userDAO; _bookDAO = bookDAO; _loanDAO = loanDAO;
+        }
+
+        public User GetUserDetails(string id) => _userDAO.GetUser(id);
+        public IEnumerable<Book> GetAllBooks() => _bookDAO.GetAllBooks();
+        public IEnumerable<LoanTransaction> GetUserHistory(string userId) => _loanDAO.GetAllTransactions().Where(t => t.UserId == userId).OrderByDescending(t => t.BorrowDate);
+
+        public void RegisterUser(string id, string name, string email, Role role, string major, int grade)
+        {
+            if (_userDAO.GetUser(id) != null) throw new Exception("ID already exists!");
+            _userDAO.AddUser(new User { Id = id, Name = name, Email = email, UserRole = role, Major = major, Grade = grade, FineBalance = 0 });
+        }
+
+        public void EditUser(string id, string newName, string newEmail, string newMajor, int newGrade)
+        {
+            var user = _userDAO.GetUser(id) ?? throw new Exception("User not found!");
+            user.Name = newName; user.Email = newEmail;
+            if (user.UserRole == Role.Member) { user.Major = newMajor; user.Grade = newGrade; }
+            _userDAO.UpdateUser(user);
+        }
+
+        public void DeleteUser(string currentUserId, string targetUserId)
+        {
+            var currentUser = _userDAO.GetUser(currentUserId);
+            if (currentUser != null && currentUser.UserRole == Role.Admin && currentUserId.Equals(targetUserId, StringComparison.OrdinalIgnoreCase))
+                throw new Exception("Cannot delete your own Admin account!");
+
+            var user = _userDAO.GetUser(targetUserId) ?? throw new Exception("User not found!");
+
+            if (_loanDAO.GetAllTransactions().Any(t => t.UserId == targetUserId && t.Status == LoanStatus.Borrowed))
+                throw new Exception("Cannot delete account! You still have active borrowed books.");
+
+            _userDAO.DeleteUser(targetUserId);
+        }
+
+        public void AddNewBook(string id, string title, string category, int stock)
+        {
+            if (_bookDAO.GetBook(id) != null) throw new Exception("Book ID already exists!");
+            _bookDAO.AddBook(new Book { Id = id, Title = title, Category = category, Stock = stock });
+        }
+
+        public void EditBook(string id, string newTitle, string newCategory, int newStock)
+        {
+            var book = _bookDAO.GetBook(id) ?? throw new Exception("Book not found!");
+            book.Title = newTitle; book.Category = newCategory; book.Stock = newStock;
+            _bookDAO.UpdateBook(book);
+        }
+
+        public void DeleteBook(string id)
+        {
+            var book = _bookDAO.GetBook(id) ?? throw new Exception("Book not found!");
+            if (_loanDAO.GetAllTransactions().Any(t => t.BookId == id && t.Status == LoanStatus.Borrowed))
+                throw new Exception("Cannot delete book! It is currently borrowed.");
+            _bookDAO.DeleteBook(id);
+        }
+
+        public IEnumerable<Book> SearchBooks(string keyword)
+        {
+            return _bookDAO.GetAllBooks().Where(b => b.Title.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
+                                                     b.Category.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
+                                                     b.Id.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+        }
+
+        public void BorrowBook(string userId, string bookId)
+        {
+            var user = _userDAO.GetUser(userId) ?? throw new Exception("User not found!");
+            var book = _bookDAO.GetBook(bookId) ?? throw new Exception("Book not found!");
+
+            var fines = GetStudentFines(userId);
+            if (fines.TotalFine > 0) throw new Exception("Borrowing blocked! Please go to the library to pay your unpaid fines first.");
+
+            bool hasOverdueBooks = _loanDAO.GetAllTransactions().Any(t => t.UserId == userId && t.Status == LoanStatus.Borrowed && DateTime.Now > t.DueDate);
+            if (hasOverdueBooks) throw new Exception("Access denied! Please return your overdue books first!");
+
+            if (_loanDAO.GetAllTransactions().Count(t => t.UserId == userId && t.Status == LoanStatus.Borrowed) >= MAX_LOANS)
+                throw new Exception($"Blocked! Reached max limit of {MAX_LOANS} active books.");
+
+            if (book.Stock <= 0)
+            {
+                if (!book.ReservationQueue.Contains(userId))
+                {
+                    book.ReservationQueue.Enqueue(userId);
+                    _bookDAO.UpdateBook(book);
+                    Console.WriteLine($"\n[INFO] Out of stock! Added to queue. You are number {book.ReservationQueue.Count}.");
+                }
+                else throw new Exception("Already in the reservation queue.");
+                return;
+            }
+
+            book.Stock--;
+            _bookDAO.UpdateBook(book);
+
+            // Tenggat waktu 1 bulan
+            _loanDAO.AddTransaction(new LoanTransaction { UserId = userId, BookId = bookId, BorrowDate = DateTime.Now, DueDate = DateTime.Now.AddMonths(1), Status = LoanStatus.Borrowed });
+            Console.WriteLine("\n[SUCCESS] Book borrowed for 1 Month!");
+        }
+
+        public void ExtendLoan(string userId, string bookId)
+        {
+            var loan = _loanDAO.GetAllTransactions().FirstOrDefault(t => t.UserId == userId && t.BookId == bookId && t.Status == LoanStatus.Borrowed)
+                ?? throw new Exception("Active loan not found.");
+
+            if (loan.ExtensionCount >= 1)
+                throw new Exception("Maximum Extended already used, please go to lbrary to renew your status and extend borrowing time");
+
+            var book = _bookDAO.GetBook(bookId);
+            if (book != null && book.ReservationQueue.Count > 0)
+                throw new Exception("Extension denied! Another student is waiting in the reservation queue.");
+
+            loan.DueDate = loan.DueDate.AddMonths(1);
+            loan.ExtensionCount++;
+            _loanDAO.UpdateTransaction(loan);
+
+            Console.WriteLine($"\n[SUCCESS] Loan extended for another month! New Due Date: {loan.DueDate:yyyy-MM-dd}");
+        }
+
+        public void ReturnBook(string userId, string bookId)
+        {
+            var loan = _loanDAO.GetAllTransactions().FirstOrDefault(t => t.UserId == userId && t.BookId == bookId && t.Status == LoanStatus.Borrowed)
+                ?? throw new Exception("Active loan not found.");
+
+            var user = _userDAO.GetUser(userId);
+            var book = _bookDAO.GetBook(bookId);
+
+            loan.ReturnDate = DateTime.Now;
+            loan.Status = LoanStatus.Returned;
+            _loanDAO.UpdateTransaction(loan);
+
+            if (loan.ReturnDate > loan.DueDate)
+            {
+                int overdueDays = (loan.ReturnDate.Value - loan.DueDate).Days;
+                if (overdueDays > 0)
+                {
+                    decimal fine = overdueDays * FINE_PER_DAY;
+                    user.FineBalance += fine; // Simpan denda ke akun
+                    _userDAO.UpdateUser(user);
+                }
+            }
+
+            if (book != null)
+            {
+                if (book.ReservationQueue.Count > 0)
+                {
+                    string nextUserId = book.ReservationQueue.Dequeue();
+                    _loanDAO.AddTransaction(new LoanTransaction { UserId = nextUserId, BookId = bookId, BorrowDate = DateTime.Now, DueDate = DateTime.Now.AddMonths(1), Status = LoanStatus.Borrowed });
+                    Console.WriteLine($"\n[INFO] Book auto-routed to queued User {nextUserId}.");
+                }
+                else book.Stock++;
+                _bookDAO.UpdateBook(book);
+            }
+            Console.WriteLine("\n[SUCCESS] Book returned!");
+        }
+
+        // Kalkulasi Fines Dinamis (Denda yang belum dibayar + Denda buku yang sedang lewat tenggat)
+        public (decimal TotalFine, List<string> FineDetails) GetStudentFines(string userId)
+        {
+            var user = _userDAO.GetUser(userId) ?? throw new Exception("User not found!");
+            decimal totalFine = user.FineBalance;
+            var details = new List<string>();
+
+            if (totalFine > 0) details.Add($"- Unpaid fine from previously returned books: {totalFine} NT");
+
+            var activeOverdue = _loanDAO.GetAllTransactions().Where(t => t.UserId == userId && t.Status == LoanStatus.Borrowed && t.DueDate < DateTime.Now).ToList();
+            foreach (var t in activeOverdue)
+            {
+                int days = (DateTime.Now - t.DueDate).Days;
+                if (days > 0)
+                {
+                    decimal fine = days * FINE_PER_DAY;
+                    totalFine += fine;
+                    var book = _bookDAO.GetBook(t.BookId);
+                    details.Add($"- Overdue '{book?.Title ?? "Unknown"}' ({days} days late): {fine} NT");
+                }
+            }
+
+            return (totalFine, details);
+        }
+
+        public void ClearFines(string adminId, string studentId)
+        {
+            var fines = GetStudentFines(studentId);
+            if (fines.TotalFine == 0) throw new Exception("This student has no fines.");
+
+            var user = _userDAO.GetUser(studentId);
+            TotalLibraryIncome += fines.TotalFine;
+            user.FineBalance = 0;
+            _userDAO.UpdateUser(user);
+        }
+
+        public void ShowAnalytics()
+        {
+            var allLoans = _loanDAO.GetAllTransactions().ToList();
+            Console.WriteLine("\n LIBRARY ANALYTICS DASHBOARD ");
+            var popularBooks = allLoans.GroupBy(l => l.BookId).OrderByDescending(g => g.Count()).Take(3);
+            Console.WriteLine("\n Top 3 Most Popular Books:");
+            foreach (var group in popularBooks) { var b = _bookDAO.GetBook(group.Key); Console.WriteLine($"- {b?.Title ?? "[Deleted Book]"} (Borrowed {group.Count()} times)"); }
+
+            var activeUsers = allLoans.GroupBy(l => l.UserId).OrderByDescending(g => g.Count()).Take(3);
+            Console.WriteLine("\n Top 3 Most Active Members:");
+            foreach (var group in activeUsers) { var u = _userDAO.GetUser(group.Key); Console.WriteLine($"- {u?.Name ?? "[Deleted User]"} (Borrowed {group.Count()} books)"); }
+            Console.WriteLine($"\n Total Fine Revenue: {TotalLibraryIncome}\n======================================");
+        }
+
+        public void ShowAllHistory()
+        {
+            var allLoans = _loanDAO.GetAllTransactions().OrderByDescending(t => t.BorrowDate).ToList();
+            Console.WriteLine("\n ALL LIBRARY TRANSACTIONS HISTORY ");
+            if (!allLoans.Any()) Console.WriteLine("No history found.");
+            foreach (var t in allLoans)
+            {
+                var user = _userDAO.GetUser(t.UserId);
+                var book = _bookDAO.GetBook(t.BookId);
+                string userName = user?.Name ?? $"[Deleted User: {t.UserId}]";
+                string bookTitle = book?.Title ?? $"[Deleted Book: {t.BookId}]";
+                string returnInfo = t.Status == LoanStatus.Returned ? $"Returned: {t.ReturnDate?.ToString("yyyy-MM-dd")}" : "Still Borrowed";
+                Console.WriteLine($"[{t.BorrowDate:yyyy-MM-dd}] {userName} borrowed '{bookTitle}' -> Status: {t.Status} | {returnInfo}");
+            }
+            Console.WriteLine("===========================================");
+        }
+
+        public void ExportReport()
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("=============================================");
+            sb.AppendLine("       LIBRARY SYSTEM - OFFICIAL REPORT    ");
+            sb.AppendLine("=============================================");
+            sb.AppendLine($"Generated on : {DateTime.Now}");
+            sb.AppendLine($"Total Revenue: {TotalLibraryIncome}");
+            sb.AppendLine("\n--- ACTIVE LOANS (CURRENTLY BORROWED) ---");
+
+            var activeLoans = _loanDAO.GetAllTransactions().Where(t => t.Status == LoanStatus.Borrowed).ToList();
+            if (!activeLoans.Any()) sb.AppendLine("No active loans at the moment.");
+
+            foreach (var t in activeLoans)
+            {
+                var userName = _userDAO.GetUser(t.UserId)?.Name ?? "[Deleted User]";
+                var bookTitle = _bookDAO.GetBook(t.BookId)?.Title ?? "[Deleted Book]";
+                sb.AppendLine($"User: {userName} ({t.UserId}) | Book: {bookTitle} | Borrowed: {t.BorrowDate:yyyy-MM-dd} | Due: {t.DueDate:yyyy-MM-dd} | Extensions: {t.ExtensionCount}");
+            }
+
+            string filePath = "LibraryReport.txt";
+            File.WriteAllText(filePath, sb.ToString());
+            Console.WriteLine($"\n[SUCCESS] Report successfully exported to '{filePath}'.");
+        }
+    }
+}
