@@ -1,0 +1,414 @@
+using System;
+using System.Linq;
+using System.Text.RegularExpressions;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace MagicLibrarySystem
+{
+    class Program
+    {
+        static void Main(string[] args)
+        {
+            var serviceProvider = new ServiceCollection()
+                .AddSingleton<IUserDAO, UserDAO>()
+                .AddSingleton<IBookDAO, BookDAO>()
+                .AddSingleton<ILoanDAO, LoanDAO>()
+                .AddTransient<ILibraryBLL, LibraryBLL>()
+                .BuildServiceProvider();
+
+            var bll = serviceProvider.GetService<ILibraryBLL>();
+
+            bll.RegisterUser("ADM001", "Super Admin", "admin@magiclib.com", Role.Admin, "", 0);
+            bll.AddNewBook("B001", "C# Mastery", "Programming", 2);
+            bll.AddNewBook("B002", "ASP.NET Core 8", "Web Dev", 1);
+
+            RunApp(bll);
+        }
+
+        static void RunApp(ILibraryBLL bll)
+        {
+            while (true)
+            {
+                Console.Clear();
+                Console.WriteLine("> WELCOME TOLIBRARY <");
+                Console.WriteLine("Hint: If you are an admin, please login with your own ID.");
+
+                string userId = GetValidLoginId();
+                Role currentRole = userId.StartsWith("ADM") ? Role.Admin : Role.Member;
+
+                var user = bll.GetUserDetails(userId);
+
+                if (user == null)
+                {
+                    if (currentRole == Role.Member)
+                    {
+                        Console.WriteLine("\nThe data isn't recorded in system.");
+                        Console.WriteLine("Press Enter to register this ID...");
+                        Console.ReadLine();
+
+                        string name = GetValidString("Enter Name: ");
+                        string email = GetValidEmail();
+                        string major = GetValidString("Enter Major: ");
+                        int grade = GetValidGrade();
+
+                        bll.RegisterUser(userId, name, email, Role.Member, major, grade);
+                        Console.WriteLine("\n[SUCCESS] Registration complete! Logging you in...");
+                    }
+                    else
+                    {
+                        Console.WriteLine("\nError: Admin ID not registered in the system.");
+                        Console.ReadLine();
+                        continue;
+                    }
+                }
+
+                bool loggedIn = true;
+                while (loggedIn)
+                {
+                    Console.WriteLine($"\n--- {(currentRole == Role.Admin ? "ADMIN PANEL" : "STUDENT PORTAL")} ---");
+                    if (currentRole == Role.Admin)
+                    {
+                        Console.WriteLine("1. View All Books");
+                        Console.WriteLine("2. Manage Users (Add/Edit/Delete)");
+                        Console.WriteLine("3. Manage Books (Add/Edit/Delete)");
+                        Console.WriteLine("4. Clear Student Fines (Manual Payment)");
+                        Console.WriteLine("5. View Analytics & History");
+                        Console.WriteLine("6. Export Report to TXT");
+                        Console.WriteLine("0. Logout");
+                    }
+                    else
+                    {
+                        Console.WriteLine("1. View All Books");
+                        Console.WriteLine("2. Search Books");
+                        Console.WriteLine("3. View My Borrowing History");
+                        Console.WriteLine("4. Borrow Book");
+                        Console.WriteLine("5. Return Book");
+                        Console.WriteLine("6. Extend Loan");
+                        Console.WriteLine("7. View My Fines");
+                        Console.WriteLine("8. Edit My Profile");
+                        Console.WriteLine("9. Delete My Account");
+                        Console.WriteLine("0. Logout");
+                    }
+
+                    string choice = GetValidString("Select option: ");
+                    try
+                    {
+                        if (choice == "0") loggedIn = false;
+                        else if (currentRole == Role.Admin) HandleAdminMenu(choice, bll, userId);
+                        else HandleStudentMenu(choice, bll, userId, ref loggedIn);
+                    }
+                    catch (Exception ex) { Console.WriteLine($"\n[ERROR] {ex.Message}"); }
+                }
+            }
+        }
+
+        static void HandleAdminMenu(string choice, ILibraryBLL bll, string currentAdminId)
+        {
+            if (choice == "1")
+            {
+                PrintAllBooks(bll);
+            }
+            else if (choice == "2")
+            {
+                Console.WriteLine("\n[1] Add User | [2] Edit User | [3] Delete User");
+                string sub = GetValidString("Choose: ");
+
+                if (sub == "1")
+                {
+                    string roleInput = GetValidString("Role (1: Admin, 2: Student): ");
+                    Role role = roleInput == "1" ? Role.Admin : Role.Member;
+
+                    string id = GetValidUserIdByRole(role);
+                    string name = GetValidString("Enter Name: ");
+                    string email = GetValidEmail();
+
+                    string major = ""; int grade = 0;
+                    if (role == Role.Member) { major = GetValidString("Enter Major: "); grade = GetValidGrade(); }
+
+                    bll.RegisterUser(id, name, email, role, major, grade);
+                    Console.WriteLine("User successfully added.");
+                }
+                else if (sub == "2")
+                {
+                    string id = GetValidString("Enter User ID to edit: ");
+                    var targetUser = bll.GetUserDetails(id);
+                    if (targetUser == null) { Console.WriteLine("User not found!"); return; }
+
+                    // FITUR EDIT CANCEL: Memanfaatkan GetEditString
+                    string name = GetEditString("Enter New Name", targetUser.Name);
+                    string email = GetEditEmail(targetUser.Email);
+
+                    string major = ""; int grade = 0;
+                    if (targetUser.UserRole == Role.Member)
+                    {
+                        major = GetEditString("Enter New Major", targetUser.Major);
+                        grade = GetEditInt("Enter New Grade (Year 1-5)", targetUser.Grade);
+                    }
+
+                    bll.EditUser(id, name, email, major, grade);
+                    Console.WriteLine("User successfully updated.");
+                }
+                else if (sub == "3")
+                {
+                    string targetId = GetValidString("Enter User ID to DELETE: ");
+                    bll.DeleteUser(currentAdminId, targetId);
+                    Console.WriteLine("User successfully deleted.");
+                }
+            }
+            else if (choice == "3")
+            {
+                Console.WriteLine("\n[1] Add Book | [2] Edit Book | [3] Delete Book");
+                string sub = GetValidString("Choose: ");
+
+                if (sub == "1")
+                {
+                    string id = GetValidString("Enter Book ID: ");
+                    string title = GetValidString("Enter Title: ");
+                    string cat = GetValidString("Enter Category: ");
+                    int stock = GetValidInt("Enter Stock Quantity: ");
+                    bll.AddNewBook(id, title, cat, stock);
+                    Console.WriteLine("Book successfully added.");
+                }
+                else if (sub == "2")
+                {
+                    string id = GetValidString("Enter Book ID to edit: ");
+                    var book = bll.GetAllBooks().FirstOrDefault(b => b.Id == id);
+                    if (book == null) { Console.WriteLine("Book not found!"); return; }
+
+                    string title = GetEditString("Enter New Title", book.Title);
+                    string cat = GetEditString("Enter New Category", book.Category);
+                    int stock = GetEditInt("Enter New Stock", book.Stock);
+
+                    bll.EditBook(id, title, cat, stock);
+                    Console.WriteLine("Book successfully updated.");
+                }
+                else if (sub == "3")
+                {
+                    string id = GetValidString("Enter Book ID to DELETE: ");
+                    bll.DeleteBook(id);
+                    Console.WriteLine("Book successfully deleted.");
+                }
+            }
+            else if (choice == "4")
+            {
+                string id = GetValidString("Enter Student ID to clear fines (Student pays physically): ");
+                bll.ClearFines(currentAdminId, id);
+                Console.WriteLine("Fines successfully cleared and recorded to total income.");
+            }
+            else if (choice == "5") { bll.ShowAnalytics(); bll.ShowAllHistory(); }
+            else if (choice == "6") { bll.ExportReport(); }
+        }
+
+        static void HandleStudentMenu(string choice, ILibraryBLL bll, string studentId, ref bool loggedIn)
+        {
+            if (choice == "1")
+            {
+                PrintAllBooks(bll);
+            }
+            else if (choice == "2")
+            {
+                var results = bll.SearchBooks(GetValidString("Enter keyword: "));
+                Console.WriteLine("\n--- Search Results ---");
+                foreach (var b in results) Console.WriteLine($"- ID: {b.Id} | Title: {b.Title} | Cat: {b.Category} | Stock: {b.Stock}");
+            }
+            else if (choice == "3")
+            {
+                var history = bll.GetUserHistory(studentId);
+                Console.WriteLine("\n--- My Borrowing History ---");
+                if (!history.Any()) { Console.WriteLine("No history found."); return; }
+
+                foreach (var t in history)
+                {
+                    var book = bll.GetAllBooks().FirstOrDefault(b => b.Id == t.BookId);
+                    string bookTitle = book?.Title ?? "[Deleted Book]";
+                    string returnInfo = t.Status == LoanStatus.Returned ? $"Returned on: {t.ReturnDate:yyyy-MM-dd}" : $"DUE: {t.DueDate:yyyy-MM-dd}";
+                    Console.WriteLine($"- [{t.BorrowDate:yyyy-MM-dd}] {bookTitle} (ID: {t.BookId}) | Status: {t.Status} | {returnInfo}");
+                }
+            }
+            else if (choice == "4") bll.BorrowBook(studentId, GetValidString("Enter Book ID to borrow: "));
+            else if (choice == "5") bll.ReturnBook(studentId, GetValidString("Enter Book ID to return: "));
+            else if (choice == "6")
+            {
+                var myActiveLoans = bll.GetUserHistory(studentId).Where(t => t.Status == LoanStatus.Borrowed).ToList();
+
+                // FILTER H-7 
+                var extendableLoans = myActiveLoans.Where(t => (t.DueDate - DateTime.Now).TotalDays <= 7).ToList();
+
+                if (!extendableLoans.Any())
+                {
+                    Console.WriteLine("\nno book that need to extend");
+                    return;
+                }
+
+                Console.WriteLine("\n--- Books Eligible for Extension (<= 7 Days Left) ---");
+                foreach (var t in extendableLoans)
+                {
+                    Console.WriteLine($"- ID: {t.BookId} | Current Due Date: {t.DueDate:yyyy-MM-dd} | Ext. Count: {t.ExtensionCount}");
+                }
+
+                string bookId = GetValidString("Enter Book ID to extend: ");
+                bll.ExtendLoan(studentId, bookId);
+            }
+            else if (choice == "7")
+            {
+                var fines = bll.GetStudentFines(studentId);
+                if (fines.TotalFine == 0)
+                {
+                    Console.WriteLine("\ntidak ada data denda.");
+                }
+                else
+                {
+                    Console.WriteLine("\n--- Fine Details ---");
+                    foreach (var d in fines.FineDetails) Console.WriteLine(d);
+                    Console.WriteLine($"\nTOTAL UNPAID FINES: {fines.TotalFine} NT");
+                    Console.WriteLine("Silahkan datang ke perpustakaan untuk membayar denda.");
+                }
+            }
+            else if (choice == "8")
+            {
+                var user = bll.GetUserDetails(studentId);
+                Console.WriteLine("\n--- Edit My Profile ---");
+                string name = GetEditString("Enter New Name", user.Name);
+                string email = GetEditEmail(user.Email);
+                string major = GetEditString("Enter New Major", user.Major);
+                int grade = GetEditInt("Enter New Grade (Year 1-5)", user.Grade);
+
+                bll.EditUser(studentId, name, email, major, grade);
+                Console.WriteLine("[SUCCESS] Profile updated.");
+            }
+            else if (choice == "9")
+            {
+                Console.WriteLine("\nWARNING: You are about to delete your account.");
+                string confirm = GetValidString("Type 'YES' to confirm: ");
+                if (confirm == "YES")
+                {
+                    bll.DeleteUser(studentId, studentId);
+                    Console.WriteLine("Account successfully deleted. Logging out...");
+                    loggedIn = false;
+                }
+                else Console.WriteLine("Deletion cancelled.");
+            }
+        }
+
+        static void PrintAllBooks(ILibraryBLL bll)
+        {
+            var books = bll.GetAllBooks();
+            Console.WriteLine("\n LIBRARY BOOK CATALOG ");
+            if (!books.Any()) { Console.WriteLine("No books available in the library."); return; }
+            foreach (var b in books)
+            {
+                Console.WriteLine($"- ID: {b.Id} | Title: {b.Title} | Category: {b.Category} | Stock: {b.Stock} left");
+            }
+        }
+
+        static string GetValidString(string prompt)
+        {
+            while (true)
+            {
+                Console.Write(prompt);
+                string input = Console.ReadLine();
+                if (!string.IsNullOrWhiteSpace(input)) return input.Trim();
+                Console.WriteLine("Input cannot be empty. Try again.");
+            }
+        }
+
+        // FITUR CANCEL/SKIP: Jika user hanya menekan "Enter", kembalikan data lama
+        static string GetEditString(string prompt, string oldData)
+        {
+            Console.Write($"{prompt} (Current: {oldData}) [Press Enter to keep]: ");
+            string input = Console.ReadLine();
+            return string.IsNullOrWhiteSpace(input) ? oldData : input.Trim();
+        }
+
+        static int GetValidInt(string prompt)
+        {
+            while (true)
+            {
+                Console.Write(prompt);
+                if (int.TryParse(Console.ReadLine(), out int result) && result >= 0) return result;
+                Console.WriteLine("Invalid input. Must be a positive number.");
+            }
+        }
+
+        static int GetEditInt(string prompt, int oldData)
+        {
+            while (true)
+            {
+                Console.Write($"{prompt} (Current: {oldData}) [Press Enter to keep]: ");
+                string input = Console.ReadLine();
+                if (string.IsNullOrWhiteSpace(input)) return oldData;
+                if (int.TryParse(input, out int result) && result >= 1 && result <= 5) return result;
+                Console.WriteLine("Invalid input. Grade must be a number between 1 and 5.");
+            }
+        }
+
+        static int GetValidGrade()
+        {
+            while (true)
+            {
+                Console.Write("Enter Grade (Year 1-5): ");
+                if (int.TryParse(Console.ReadLine(), out int result) && result >= 1 && result <= 5) return result;
+                Console.WriteLine("Invalid input. Grade must be a number between 1 and 5.");
+            }
+        }
+
+        static string GetValidLoginId()
+        {
+            int currentMinguoYear = DateTime.Now.Year - 1911;
+            while (true)
+            {
+                string id = GetValidString("\nEnter your ID to Login: ").ToUpper();
+                if (id.StartsWith("ADM")) return id;
+
+                if (Regex.IsMatch(id, @"^\d{9}$"))
+                {
+                    int admissionYear = int.Parse(id.Substring(0, 3));
+                    if (admissionYear <= currentMinguoYear) return id;
+                }
+
+                Console.WriteLine("Invalid ID. Please try again.");
+            }
+        }
+
+        static string GetValidUserIdByRole(Role role)
+        {
+            int currentMinguoYear = DateTime.Now.Year - 1911;
+            while (true)
+            {
+                string id = GetValidString(role == Role.Admin ? "Enter Admin ID (ADM...): " : "Enter 9-digit Student ID: ").ToUpper();
+
+                if (role == Role.Admin && id.StartsWith("ADM")) return id;
+                if (role == Role.Member && Regex.IsMatch(id, @"^\d{9}$"))
+                {
+                    int admissionYear = int.Parse(id.Substring(0, 3));
+                    if (admissionYear <= currentMinguoYear) return id;
+                    Console.WriteLine($"Invalid ID: Admission year ({admissionYear}) cannot be greater than current Minguo year ({currentMinguoYear}).");
+                    continue;
+                }
+
+                Console.WriteLine(role == Role.Admin ? "Must start with ADM." : "Must be exactly 9 numeric digits.");
+            }
+        }
+
+        static string GetValidEmail()
+        {
+            while (true)
+            {
+                string email = GetValidString("Enter Email: ");
+                if (email.Contains("@") && email.Contains(".")) return email;
+                Console.WriteLine("Invalid Email format.");
+            }
+        }
+
+        static string GetEditEmail(string oldEmail)
+        {
+            while (true)
+            {
+                string email = GetEditString("Enter New Email", oldEmail);
+                if (email == oldEmail) return oldEmail;
+                if (email.Contains("@") && email.Contains(".")) return email;
+                Console.WriteLine("Invalid Email format.");
+            }
+        }
+    }
+}
