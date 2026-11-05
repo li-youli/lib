@@ -1,0 +1,39 @@
+using System.Collections.Generic;
+
+namespace MagicLibrarySystem
+{
+    public class UserDAO : IUserDAO
+    {
+        private readonly Dictionary<string, User> _users = new Dictionary<string, User>();
+
+        public void AddUser(User user) => _users.Add(user.Id, user);
+        public User? GetUser(string id) => _users.TryGetValue(id, out User? user) ? user : null;
+        public IEnumerable<User> GetAllUsers() => _users.Values;
+        public void UpdateUser(User user) => _users[user.Id] = user;
+        public void DeleteUser(string id) => _users.Remove(id);
+    }
+
+    public class BookDAO : IBookDAO
+    {
+        private readonly Dictionary<string, Book> _books = new Dictionary<string, Book>();
+
+        public void AddBook(Book book) => _books.Add(book.Id, book);
+        public Book? GetBook(string id) => _books.TryGetValue(id, out var book) ? book : null;
+        public IEnumerable<Book> GetAllBooks() => _books.Values;
+        public void UpdateBook(Book book) => _books[book.Id] = book;
+        public void DeleteBook(string id) => _books.Remove(id);
+    }
+
+    public class LoanDAO : ILoanDAO
+    {
+        private readonly List<LoanTransaction> _transactions = new List<LoanTransaction>();
+
+        public void AddTransaction(LoanTransaction transaction) => _transactions.Add(transaction);
+        public IEnumerable<LoanTransaction> GetAllTransactions() => _transactions;
+        public void UpdateTransaction(LoanTransaction transaction)
+        {
+            var index = _transactions.FindIndex(t => t.Id == transaction.Id);
+            if (index != -1) _transactions[index] = transaction;
+        }
+    }
+}
