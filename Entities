@@ -1,0 +1,40 @@
+using System;
+using System.Collections.Generic;
+
+namespace MagicLibrarySystem
+{
+    public enum Role { Admin, Member }
+    public enum LoanStatus { Borrowed, Returned, ReadyForPickup }
+
+    public class User
+    {
+        public string Id { get; set; }
+        public string Name { get; set; }
+        public string Email { get; set; }
+        public Role UserRole { get; set; }
+        public string Major { get; set; }
+        public int Grade { get; set; }
+        public decimal FineBalance { get; set; }
+    }
+
+    public class Book
+    {
+        public string Id { get; set; }
+        public string Title { get; set; }
+        public string Category { get; set; }
+        public int Stock { get; set; }
+        public Queue<string> ReservationQueue { get; set; } = new Queue<string>();
+    }
+
+    public class LoanTransaction
+    {
+        public string Id { get; set; } = Guid.NewGuid().ToString();
+        public string UserId { get; set; }
+        public string BookId { get; set; }
+        public DateTime BorrowDate { get; set; }
+        public DateTime DueDate { get; set; }
+        public DateTime? ReturnDate { get; set; }
+        public LoanStatus Status { get; set; }
+        public int ExtensionCount { get; set; } = 0;
+    }
+}
